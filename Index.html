@@ -1,0 +1,176 @@
+<!DOCTYPE html>
+<html lang="vi">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width,initial-scale=1" />
+<title>Giám sát ao nuôi — Dashboard</title>
+<style>
+:root{
+  --bg:#0f1724; --card:#0b1220; --muted:#9aa4b2; --accent:#18a999; --glass: rgba(255,255,255,0.03);
+}
+*{box-sizing:border-box;font-family:Inter,ui-sans-serif,system-ui,-apple-system,"Segoe UI",Roboto,"Helvetica Neue",Arial}
+body{margin:0;background:linear-gradient(180deg,#071022 0%, #0b1420 100%);color:#e6eef6;min-height:100vh;}
+header{padding:20px;display:flex;align-items:center;gap:16px;border-bottom:1px solid rgba(255,255,255,0.03);background:linear-gradient(180deg,rgba(255,255,255,0.02),transparent);backdrop-filter:blur(6px);}
+.container{max-width:1100px;margin:24px auto;padding:0 16px}
+.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:16px}
+.card{background:var(--card);border-radius:12px;padding:14px;box-shadow:0 6px 18px rgba(2,6,23,0.6);border:1px solid rgba(255,255,255,0.03)}
+.card h3{margin:0;font-size:13px;color:var(--muted);font-weight:600}
+.value{font-size:28px;margin-top:8px;color:#fff;font-weight:700}
+.small{font-size:12px;color:var(--muted);margin-top:6px}
+.panel{height:300px;border-radius:12px;padding:12px;background:linear-gradient(180deg,rgba(255,255,255,0.01),transparent);border:1px solid rgba(255,255,255,0.02)}
+.btn{background:var(--accent);color:#052025;border-radius:8px;padding:8px 10px;font-weight:700;border:none;cursor:pointer}
+.mutebtn{background:transparent;border:1px solid rgba(255,255,255,0.04);color:var(--muted);padding:8px 10px;border-radius:8px}
+.status{padding:6px 8px;border-radius:8px;background:var(--glass);font-size:13px;color:var(--muted)}
+.spark{width:100%;height:50px;display:block}
+footer{color:var(--muted);text-align:center;padding:20px 0;font-size:13px}
+#loginBox{display:flex;flex-direction:column;align-items:center;justify-content:center;height:100vh;text-align:center}
+#loginBox input{margin:6px 0;padding:10px;border-radius:8px;width:250px;background:transparent;color:#fff;border:1px solid rgba(255,255,255,0.1)}
+#loginBox button{margin-top:10px;width:260px}
+.hidden{display:none!important}
+.logout-btn{
+  background:#e74c3c;
+  color:white;
+  border:none;
+  padding:8px 16px;
+  border-radius:8px;
+  cursor:pointer;
+  font-weight:600;
+  margin-left:12px;
+}
+.logout-btn:hover{background:#c0392b;}
+</style>
+</head>
+<body>
+
+<!-- 🔐 LOGIN BOX -->
+<div id="loginBox">
+  <h2>Đăng nhập ThingsBoard</h2>
+  <input id="username" placeholder="Email đăng nhập">
+  <input id="password" type="password" placeholder="Mật khẩu">
+  <button id="btnLogin" class="btn">Đăng nhập</button>
+  <p id="loginStatus" style="font-size:13px;color:#9aa4b2;margin-top:10px"></p>
+</div>
+
+<!-- 🌊 DASHBOARD -->
+<div id="mainApp" class="hidden">
+<header>
+  <div style="display:flex;flex-direction:column">
+    <h1>Hệ thống giám sát môi trường ao nuôi</h1>
+    <p>Dashboard kết nối ThingsBoard Cloud</p>
+  </div>
+  <div style="margin-left:auto;display:flex;align-items:center;gap:8px;">
+    <div class="status" id="modeLabel">MODE: THINGSBOARD</div>
+    <button id="logoutBtn" class="logout-btn">Đăng xuất</button>
+  </div>
+</header>
+
+<div class="container">
+  <div class="grid" id="cards">
+    <div class="card"><h3>Nhiệt độ</h3><div class="value" id="temperature">-- °C</div><canvas id="spark_temp" class="spark"></canvas></div>
+    <div class="card"><h3>pH</h3><div class="value" id="ph">--</div><canvas id="spark_ph" class="spark"></canvas></div>
+    <div class="card"><h3>Oxy hòa tan</h3><div class="value" id="do">-- mg/L</div><canvas id="spark_do" class="spark"></canvas></div>
+    <div class="card"><h3>Độ mặn</h3><div class="value" id="salinity">-- ppt</div><canvas id="spark_sal" class="spark"></canvas></div>
+    <div class="card"><h3>Độ đục</h3><div class="value" id="turbidity">-- NTU</div><canvas id="spark_tur" class="spark"></canvas></div>
+  </div>
+
+  <div class="panel card" style="margin-top:20px">
+    <h3>Log hệ thống</h3>
+    <div id="log" style="font-size:13px;color:var(--muted);height:200px;overflow:auto"></div>
+  </div>
+
+  <footer>© Đồ án tốt nghiệp — Giám sát môi trường ao nuôi (ThingsBoard + ESP32)</footer>
+</div>
+</div>
+
+<script>
+let DEVICE_ID = "f0d3d8b0-9dcc-11f0-b4af-b334f2239a02"; // 🔧 thay bằng Device ID của bạn
+let JWT_TOKEN = "";
+let history = { temperature:[], pH:[], dissolved_oxygen:[], salinity:[], turbidity:[] };
+const keys = ["temperature","pH","dissolved_oxygen","salinity","turbidity"];
+const POLL_MS = 5000;
+const HISTORY_LENGTH = 40;
+let timer = null;
+
+function log(msg){
+  const el=document.getElementById("log");
+  const t=new Date().toLocaleTimeString();
+  el.innerHTML=`<div>[${t}] ${msg}</div>`+el.innerHTML;
+}
+
+function pushHist(k,v){let a=history[k];a.push(v);if(a.length>HISTORY_LENGTH)a.shift();}
+
+function drawSpark(id,arr){
+  const c=document.getElementById(id);if(!c)return;
+  const ctx=c.getContext('2d');const w=c.width=c.clientWidth;const h=c.height=c.clientHeight;
+  ctx.clearRect(0,0,w,h);
+  if(arr.length<2)return;
+  const max=Math.max(...arr),min=Math.min(...arr),range=(max-min)||1;
+  ctx.beginPath();
+  arr.forEach((v,i)=>{const x=(i/(arr.length-1))*(w-6)+3;const y=h-4-((v-min)/range)*(h-8);i?ctx.lineTo(x,y):ctx.moveTo(x,y);});
+  ctx.strokeStyle="rgba(24,169,153,0.95)";ctx.lineWidth=2;ctx.stroke();
+}
+
+async function fetchTelemetry(){
+  try{
+    const url=`https://thingsboard.cloud/api/plugins/telemetry/DEVICE/${DEVICE_ID}/values/timeseries?keys=${keys.join(",")}`;
+    const res=await fetch(url,{headers:{'X-Authorization':'Bearer '+JWT_TOKEN}});
+    if(res.ok){
+      const j=await res.json(),d={};
+      for(const k of keys){if(j[k])d[k]=parseFloat(j[k][0].value);}
+      updateUI(d);
+      log("Cập nhật dữ liệu từ ThingsBoard");
+    }else log("Lỗi fetch: "+res.status);
+  }catch(e){log("Lỗi mạng: "+e);}
+}
+
+function updateUI(d){
+  if(d.temperature!==undefined){document.getElementById("temperature").innerText=d.temperature.toFixed(2)+" °C";pushHist("temperature",d.temperature);}
+  if(d.pH!==undefined){document.getElementById("ph").innerText=d.pH.toFixed(2);pushHist("pH",d.pH);}
+  if(d.dissolved_oxygen!==undefined){document.getElementById("do").innerText=d.dissolved_oxygen.toFixed(2)+" mg/L";pushHist("dissolved_oxygen",d.dissolved_oxygen);}
+  if(d.salinity!==undefined){document.getElementById("salinity").innerText=d.salinity.toFixed(2)+" ppt";pushHist("salinity",d.salinity);}
+  if(d.turbidity!==undefined){document.getElementById("turbidity").innerText=d.turbidity.toFixed(2)+" NTU";pushHist("turbidity",d.turbidity);}
+  drawSpark("spark_temp",history.temperature);
+  drawSpark("spark_ph",history.pH);
+  drawSpark("spark_do",history.dissolved_oxygen);
+  drawSpark("spark_sal",history.salinity);
+  drawSpark("spark_tur",history.turbidity);
+}
+
+async function login(){
+  const user=document.getElementById("username").value.trim();
+  const pass=document.getElementById("password").value.trim();
+  const status=document.getElementById("loginStatus");
+  if(!user||!pass){status.innerText="Vui lòng nhập đầy đủ.";return;}
+  status.innerText="Đang đăng nhập...";
+  try{
+    const res=await fetch("https://thingsboard.cloud/api/auth/login",{
+      method:"POST",headers:{"Content-Type":"application/json"},
+      body:JSON.stringify({username:user,password:pass})
+    });
+    if(res.ok){
+      const data=await res.json();JWT_TOKEN=data.token;
+      document.getElementById("loginBox").classList.add("hidden");
+      document.getElementById("mainApp").classList.remove("hidden");
+      log("Đăng nhập thành công.");
+      timer=setInterval(fetchTelemetry,POLL_MS);
+      fetchTelemetry();
+    }else status.innerText="Sai tài khoản hoặc mật khẩu.";
+  }catch(e){status.innerText="Lỗi kết nối: "+e.message;}
+}
+
+// 🧩 Xử lý ĐĂNG XUẤT
+document.getElementById("logoutBtn").addEventListener("click",()=>{
+  clearInterval(timer);
+  JWT_TOKEN="";
+  document.getElementById("mainApp").classList.add("hidden");
+  document.getElementById("loginBox").classList.remove("hidden");
+  document.getElementById("username").value="";
+  document.getElementById("password").value="";
+  document.getElementById("loginStatus").innerText="Đã đăng xuất.";
+  log("Đăng xuất thành công.");
+});
+
+document.getElementById("btnLogin").addEventListener("click",login);
+</script>
+</body>
+</html>
